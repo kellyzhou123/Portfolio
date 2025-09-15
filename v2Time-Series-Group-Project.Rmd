@@ -1,0 +1,733 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+## Volatility, Events, and Principle Component Analysis: What is driving the FX market?
+
+E334 Time Series Analysis
+
+## Loading Required Libraries
+
+In this project, we plan to analyze 10 major currencies against USD, with a particular focus on the period before and after 2024 US election, taking a look at the Trump 2.0 era, and its implication on the FX markets. We dive deeper into volatility for selected currencies: GBP, EUR, and JPY (the one we are using on daily basis, the one we need to take in mind as we travel a lot in Europe, and the one everybody has been talking about), to see if Trump is bringing more uncertainties to them. We also mark key events (election day, auguration day, and ongoing tariff talks) to analyze how FX markets are reacting. For the last part, we're taking a step back from event speculation. Coming back to the fundamental economic analysis, we use PCA (Principle Component Analysis) to check, for our local UK market, without all the noises and chaos from Trump, is overarching macroeconomic factors still driving the British Pound. 
+
+```{r Loading Required Libraries}
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gganimate)
+library(gifski)
+library(lubridate)
+library(scales)
+library(viridis)
+library(patchwork)
+library(dygraphs)
+library(xts)
+library(gridExtra)
+library(factoextra)
+library(plotly)
+library(FactoMineR)
+library(tibble)
+library(corrplot)
+library(broom)
+
+```
+## Data Exploration
+
+We collected data from the Bloomberg terminal. Volatility data is retrieved from tickers such as USDJPYV1W BGN Curncy, which is USDJPY FX Implied Volatility. It is a measure of the market expected future volatility of a currency exchange rate from now until the maturity date. The future volatility is the single undeterminable variable in the comon Black Scholes option pricing model. Bloomberg ATM implied volatilities can be used to obtain the correct Black Scholes price for a delta neutral straddle struck at maturity. Using FX implied volatility, we examined markets' forecast in those popular currency pairs.
+
+Spot rate data is retrieved from tickers, such as USDJPY BGN Curncy, on the Bloomberg terminal, taking the prices of 1 USD in selected currencies. We picked popular G10 currencies including EUR, CAD, GBP, AUD, JPY, CHF, NZD, NOK, and as we have two team members from Mainland China and one member from India, we selected CNH and INR for analysis as well.
+
+For UK economic data, UK GDP Growth MoM, UK Industrial Production Growth MoM, UK Retail Sales Growth MoM, and UK Unemployment Rate are all retrieved from UK Office for National Statistics.
+
+```{r Loading Data}
+
+# Volatility data
+eur_vol_data <- read_excel("eur vol.xlsx", 
+                          col_types = c("text", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric", "numeric"))
+
+gbp_vol_data <- read_excel("gbp vol.xlsx", 
+                          col_types = c("text", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric"))
+
+jpy_vol_data <- read_excel("jpy vol.xlsx", 
+                          col_types = c("date", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric"))
+
+# UK economic data
+
+UK_economic_data <- read_excel("UK economic data.xlsx",
+                          col_types = c("date", "numeric", "numeric", 
+                                       "numeric", "numeric"))
+
+# FX spot rate
+
+spot_rate <- read_excel("Spot rate.xlsx",
+                        col_types = c("date", "numeric", "numeric", "numeric", 
+                                      "numeric", "numeric", "numeric",
+                                      "numeric", "numeric", "numeric", "numeric"))
+
+```
+
+```{r Data Cleaning}
+
+# Convert character columns (for eur_vol_data, gbp_vol_data) to Date format
+eur_vol_data$Date <- as.Date(eur_vol_data$Date, format = "%m/%d/%Y")
+gbp_vol_data$Date <- as.Date(gbp_vol_data$Date, format = "%m/%d/%Y")
+jpy_vol_data$Date <- as.Date(jpy_vol_data$Date, format = "%m/%d/%Y")
+UK_economic_data$Date <- as.Date(UK_economic_data$Date, format = "%m/%d/%Y")
+spot_rate$Date <- as.Date(spot_rate$Date, format = "%m/%d/%Y")
+
+# Verify if everything is aligned correctly
+sapply(list(eur_vol_data, gbp_vol_data, jpy_vol_data, UK_economic_data, spot_rate), function(df) class(df$Date))
+
+```
+
+Here we have the overview of datasets. As mentioned above, all spot rates are the prices of 1 USD in the target currencies. Also, because INR is non-deliverable, sometimes the Bloomberg terminal will have missing data for certain dates. For volatility, we selected different tenors: 1 week, 1 month, 3 months, 6 months and 1 year implied volatilities to measure how markets have been anticipating the movements in short and relatively long terms. Due to access to data, we are missing the latest UK unemployment data that should have been released on January 31st 2025. 
+
+```{r Data Exploration}
+
+glimpse(spot_rate)
+glimpse(gbp_vol_data)
+glimpse(UK_economic_data)
+
+```
+
+## Spot Rate Time Series Static Plots
+
+
+```{r Spot Rate Static Plots}
+
+# Reshape data from wide to long format
+spot_rate_long <- spot_rate %>%
+  pivot_longer(cols = -Date, 
+               names_to = "Currency", 
+               values_to = "Rate")
+
+# Shorten the currency names to the first six characters
+spot_rate_long$Currency <- substr(spot_rate_long$Currency, 1, 6)
+
+# Create a plot for each currency
+currency_plots <- lapply(unique(spot_rate_long$Currency), function(currency) {
+  ggplot(subset(spot_rate_long, Currency == currency), aes(x = Date, y = Rate)) +
+    geom_line() +
+    labs(title = currency, x = "Date", y = "Rate") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+})
+
+# Combine the plots in a 3x4 grid (adjust number of rows/columns as needed)
+combined_plot <- wrap_plots(currency_plots, ncol = 3)
+
+# Save the combined plot to a file
+ggsave("spot_rate_time_series.png", combined_plot, width = 15, height = 12)
+
+combined_plot
+
+```
+The panel of line plots above illustrates the daily spot rates of USD against selected 10 currencies between January 1st 2024 to March 14th 2025. Each subplot represents a different pair, including USDEUR, USDCAD, and others.
+
+A few key patterns stand out. While exchange rate trends varied across currencies, there is a notable synchronized spike across many pairs after the US election (November 5, 2024). This shared reaction suggests that markets broadyly responded to the Trump presidency, likley pricing in higher inflation outlook, and geopolitical uncertainties. USDINR and USDJPY, in particular, show significant upward movement, indicating potential capital outflows or stronger demand for USD. 
+
+For the next part, we zoom into three currencies: GBP (we are spending it everyday, so it would be beneficial to understand its relative strength against USD), EUR (needless to say, we love European weekend getaways, so knowing how to finance them is very important), and JPY (to see if the number one carry trade idea still holds true). We marked the election day in Republican red on the interactive dygraphs, making the election effect clearer.
+
+```{r Interactive dygraphs}
+
+# Reshape the data from wide to long format
+spot_rate_long <- spot_rate %>%
+  pivot_longer(cols = -Date, 
+               names_to = "Currency", 
+               values_to = "Rate")
+
+# Reshape the long data back to wide format for xts, one column per currency
+spot_rate_wide <- spread(spot_rate_long, key = Currency, value = Rate)
+
+# Shorten the currency names to the first six characters
+colnames(spot_rate_wide)[-1] <- substr(colnames(spot_rate_wide)[-1], 1, 6)  # Exclude Date column
+
+# Convert the wide data to xts format (one column per currency)
+spot_rate_xts <- xts(spot_rate_wide[, -1], order.by = spot_rate_wide$Date)  # Exclude Date from the columns
+
+
+dygraph(spot_rate_xts[, "USDGBP"]) %>%
+  dySeries("USDGBP", label = "US Dollar to British Pound") %>%
+  dyEvent("2024-11-05", "US Election", color = "red")  # Add U.S. Election date
+
+dygraph(spot_rate_xts[, "USDEUR"]) %>%
+  dySeries("USDEUR", label = "US Dollar to Euro") %>%
+  dyEvent("2024-11-05", "US Election", color = "red")  # Add U.S. Election date
+
+dygraph(spot_rate_xts[, "USDJPY"]) %>%
+  dySeries("USDJPY", label = "US Dollar to Japanese Yen") %>%
+  dyEvent("2024-11-05", "US Election", color = "red")  # Add U.S. Election date
+
+
+```
+## Volatility Term Structure
+
+As we learned from Session 5, implied volatility are estimates of future volatility extracted from the options market. From the section above, we see that there is clearly a spike after election day for USDGBP, USDEUR, and USDJPY. If markets are simply going in one direction, things are easy, and life is good. However, as sophisticated investors and traders, we want to see what volatility is like as Trump brings un-precedented uncertainties to the US economy and the world. Here we plot volatility term structures (AKA horizontal skew) for those three selected currencies, to have a visualization how markets are pricing in mixed outlooks. 
+
+```{r Data Preparation for EUR Vol Term Structure GIF}
+
+# Reshape data for volatility plots
+eur_vol_data_long <- eur_vol_data %>%
+  select(Date, EURUSDV1W, EURUSDV1M, EURUSDV3M, EURUSDV6M, EURUSDV1Y) %>%
+  pivot_longer(
+    cols = c(EURUSDV1W, EURUSDV1M, EURUSDV3M, EURUSDV6M, EURUSDV1Y),
+    names_to = "Tenor",
+    values_to = "Volatility"
+  ) %>%
+  # Clean up tenor names
+  mutate(Tenor = case_when(
+    Tenor == "EURUSDV1W" ~ "1 Week",
+    Tenor == "EURUSDV1M" ~ "1 Month",
+    Tenor == "EURUSDV3M" ~ "3 Months",
+    Tenor == "EURUSDV6M" ~ "6 Months",
+    Tenor == "EURUSDV1Y" ~ "1 Year",
+    TRUE ~ Tenor
+  )) %>%
+  # Ensure Tenor is a factor with levels in a meaningful order
+  mutate(Tenor = factor(Tenor, levels = c("1 Week", "1 Month", "3 Months", "6 Months", "1 Year")))
+
+# Get all unique dates for animation
+eur_unique_dates <- unique(eur_vol_data_long$Date)
+
+# Convert tenor to numeric values for x-axis
+eur_vol_data_long <- eur_vol_data_long %>%
+  mutate(Tenor_Months = case_when(
+    Tenor == "1 Week" ~ 0.25,
+    Tenor == "1 Month" ~ 1,
+    Tenor == "3 Months" ~ 3,
+    Tenor == "6 Months" ~ 6,
+    Tenor == "1 Year" ~ 12
+  ))
+
+
+```
+
+### EUR Vol
+
+```{r EUR Vol Term Structure Animation}
+
+eur_term_structure <- ggplot(eur_vol_data_long, 
+                                 aes(x = Tenor_Months, y = Volatility, 
+                                     group = 1, color = as.Date(Date))) +  # Use group = 1 for a single line
+  geom_line(size = 1.5) +  # One line for each date
+  geom_point(size = 3.5) +  # Add points for each date
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "USDEUR Volatility Term Structure",
+    x = "Tenor",
+    y = "Volatility",
+    color = "Date"
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 22, face = "bold"),
+    plot.subtitle = element_text(size = 18),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_line(color = "gray95")
+  ) +
+  scale_x_continuous(breaks = c(0.25, 1, 3, 6, 12),
+                     labels = c("1W", "1M", "3M", "6M", "1Y")) +
+  scale_color_viridis_c(option = "plasma") +  # Continuous color scale for time progression
+  transition_manual(Date) +  # Transition through dates instead of time
+  labs(subtitle = "{format(as.Date(current_frame), '%b %d, %Y')}")  # Correct subtitle with Date format
+
+# Save the animation as a GIF
+anim_save(
+  "eur_term_structure.gif",
+  animate(
+    eur_term_structure,
+    nframes = length(unique(eur_vol_data_long$Date)),
+    fps = 10,  # Adjust the speed
+    width = 1000,
+    height = 600,
+    renderer = gifski_renderer(loop = TRUE),
+    res = 120,
+    end_pause = 20  # Pause at the end for 20 frames
+  )
+)
+
+magick::image_read("eur_term_structure.gif")
+
+```
+
+### GBP Vol
+
+```{r GBP Vol}
+
+
+# Reshape data for volatility plots
+gbp_vol_data_long <- gbp_vol_data %>%
+  select(Date, GBPUSDV1W, GBPUSDV1M, GBPUSDV3M, GBPUSDV6M, GBPUSDV1Y) %>%
+  pivot_longer(
+    cols = c(GBPUSDV1W, GBPUSDV1M, GBPUSDV3M, GBPUSDV6M, GBPUSDV1Y),
+    names_to = "Tenor",
+    values_to = "Volatility"
+  ) %>%
+  # Clean up tenor names
+  mutate(Tenor = case_when(
+    Tenor == "GBPUSDV1W" ~ "1 Week",
+    Tenor == "GBPUSDV1M" ~ "1 Month",
+    Tenor == "GBPUSDV3M" ~ "3 Months",
+    Tenor == "GBPUSDV6M" ~ "6 Months",
+    Tenor == "GBPUSDV1Y" ~ "1 Year",
+    TRUE ~ Tenor
+  )) %>%
+  # Ensure Tenor is a factor with levels in a meaningful order
+  mutate(Tenor = factor(Tenor, levels = c("1 Week", "1 Month", "3 Months", "6 Months", "1 Year")))
+
+# Get all unique dates for animation
+gbp_unique_dates <- unique(gbp_vol_data_long$Date)
+
+# Convert tenor to numeric values for x-axis
+gbp_vol_data_long <- gbp_vol_data_long %>%
+  mutate(Tenor_Months = case_when(
+    Tenor == "1 Week" ~ 0.25,
+    Tenor == "1 Month" ~ 1,
+    Tenor == "3 Months" ~ 3,
+    Tenor == "6 Months" ~ 6,
+    Tenor == "1 Year" ~ 12
+  ))
+
+gbp_term_structure <- ggplot(gbp_vol_data_long, 
+                                 aes(x = Tenor_Months, y = Volatility, 
+                                     group = 1, color = as.Date(Date))) +  # Use group = 1 for a single line
+  geom_line(size = 1.5) +  # One line for each date
+  geom_point(size = 3.5) +  # Add points for each date
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "USDGBP Volatility Term Structure",
+    x = "Tenor",
+    y = "Volatility",
+    color = "Date"
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 22, face = "bold"),
+    plot.subtitle = element_text(size = 18),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_line(color = "gray95")
+  ) +
+  scale_x_continuous(breaks = c(0.25, 1, 3, 6, 12),
+                     labels = c("1W", "1M", "3M", "6M", "1Y")) +
+  scale_color_viridis_c(option = "plasma") +  # Continuous color scale for time progression
+  transition_manual(Date) +  # Transition through dates instead of time
+  labs(subtitle = "{format(as.Date(current_frame), '%b %d, %Y')}")  # Correct subtitle with Date format
+
+# Save the animation as a GIF
+anim_save(
+  "gbp_term_structure.gif",
+  animate(
+    gbp_term_structure,
+    nframes = length(unique(gbp_vol_data_long$Date)),
+    fps = 10,  # Adjust the speed
+    width = 1000,
+    height = 600,
+    renderer = gifski_renderer(loop = TRUE),
+    res = 120,
+    end_pause = 20  # Pause at the end for 20 frames
+  )
+)
+
+magick::image_read("gbp_term_structure.gif")
+
+
+```
+
+### JPY Vol
+
+```{r JPY Vol}
+
+
+# Reshape data for volatility plots
+jpy_vol_data_long <- jpy_vol_data %>%
+  select(Date, USDJPYV1W, USDJPYV1M, USDJPYV3M, USDJPYV6M, USDJPYV1Y) %>%
+  pivot_longer(
+    cols = c(USDJPYV1W, USDJPYV1M, USDJPYV3M, USDJPYV6M, USDJPYV1Y),
+    names_to = "Tenor",
+    values_to = "Volatility"
+  ) %>%
+  # Clean up tenor names
+  mutate(Tenor = case_when(
+    Tenor == "USDJPYV1W" ~ "1 Week",
+    Tenor == "USDJPYV1M" ~ "1 Month",
+    Tenor == "USDJPYV3M" ~ "3 Months",
+    Tenor == "USDJPYV6M" ~ "6 Months",
+    Tenor == "USDJPYV1Y" ~ "1 Year",
+    TRUE ~ Tenor
+  )) %>%
+  # Ensure Tenor is a factor with levels in a meaningful order
+  mutate(Tenor = factor(Tenor, levels = c("1 Week", "1 Month", "3 Months", "6 Months", "1 Year")))
+
+# Get all unique dates for animation
+jpy_unique_dates <- unique(jpy_vol_data_long$Date)
+
+# Convert tenor to numeric values for x-axis
+jpy_vol_data_long <- jpy_vol_data_long %>%
+  mutate(Tenor_Months = case_when(
+    Tenor == "1 Week" ~ 0.25,
+    Tenor == "1 Month" ~ 1,
+    Tenor == "3 Months" ~ 3,
+    Tenor == "6 Months" ~ 6,
+    Tenor == "1 Year" ~ 12
+  ))
+
+jpy_term_structure <- ggplot(jpy_vol_data_long, 
+                                 aes(x = Tenor_Months, y = Volatility, 
+                                     group = 1, color = as.Date(Date))) +  # Use group = 1 for a single line
+  geom_line(size = 1.5) +  # One line for each date
+  geom_point(size = 3.5) +  # Add points for each date
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "USDJPY Volatility Term Structure",
+    x = "Tenor",
+    y = "Volatility",
+    color = "Date"
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 22, face = "bold"),
+    plot.subtitle = element_text(size = 18),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_line(color = "gray95")
+  ) +
+  scale_x_continuous(breaks = c(0.25, 1, 3, 6, 12),
+                     labels = c("1W", "1M", "3M", "6M", "1Y")) +
+  scale_color_viridis_c(option = "plasma") +  # Continuous color scale for time progression
+  transition_manual(Date) +  # Transition through dates instead of time
+  labs(subtitle = "{format(as.Date(current_frame), '%b %d, %Y')}")  # Correct subtitle with Date format
+
+# Save the animation as a GIF
+anim_save(
+  "jpy_term_structure.gif",
+  animate(
+    jpy_term_structure,
+    nframes = length(unique(jpy_vol_data_long$Date)),
+    fps = 10,  # Adjust the speed
+    width = 1000,
+    height = 600,
+    renderer = gifski_renderer(loop = TRUE),
+    res = 120,
+    end_pause = 20  # Pause at the end for 20 frames
+  )
+)
+
+
+#magick::image_read("jpy_term_structure.gif")
+
+
+```
+We can clearly see that, for USDGBP, USDEUR, and USDJPY, the volatility term structures show significant upward shifts as the election day approached. Across all tenors (from 1 week to 1 year), implied vols increased, indicating the market was repricing risk and anticipating greater price swings. The 1-week tenor spiked the most, significantly more than medium- or long-term volatilities. This created a steepening of the term structure. 
+
+A steepening driven by short-term vols typically signals event-driven risk, as traders price in heightened short-term uncertainty - in this case, around the election outcome and its near-term market impact. 
+
+To better capture the progression and layering of these shifts for USDGBP, the "cable" pair and the currencies we care about the most, we create a waterfall-style static chart. The next part plots a sequence of USDGBP implied vol urves over time, sampled at regular intervals (every five trading days), with each curve offset vertically to simulate depth.
+
+## Waterfall
+
+```{r Waterfall}
+
+# Prepare waterfall data (sample every 5 days for curve clarity)
+waterfall_data <- gbp_vol_data_long %>%
+  filter(Date %in% gbp_unique_dates[seq(1, length(gbp_unique_dates), by = 5)]) %>%
+  mutate(
+    DateIndex = as.numeric(factor(Date, levels = sort(unique(Date)))),
+    VolatilityOffset = Volatility + (DateIndex * 0.1),  # Creates the 3D waterfall effect
+    DateLabel = format(Date, "%b %d"),
+    DateNumeric = as.numeric(Date)# For curve-side labels
+  ) %>%
+  arrange(Date)
+
+# Create the waterfall plot
+waterfall_plot <- ggplot(waterfall_data, 
+                         aes(x = Tenor_Months, 
+                             y = VolatilityOffset, 
+                             group = DateIndex, 
+                             color = DateNumeric)) +  # Keep as actual Date for color scale
+  geom_line(size = 0.3, color = "gray80") +  # Background lines for depth
+  geom_line(size = 1.2) +
+  geom_point(size = 2.5) +
+  geom_text(aes(x = 12.5, label = DateLabel), hjust = 0, size = 3) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "USDGBP Volatility Term Structure Evolution",
+    subtitle = paste("From", format(min(waterfall_data$Date), "%b %d, %Y"), 
+                     "to", format(max(waterfall_data$Date), "%b %d, %Y")),
+    x = "Tenor",
+    y = "Volatility (%) + Time Offset",
+    color = "Date"
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 20, face = "bold"),
+    plot.subtitle = element_text(size = 16),
+    axis.title = element_text(size = 16),
+    panel.grid.major = element_line(color = "gray95"),
+    panel.grid.minor = element_line(color = "gray98")
+  ) +
+  scale_x_continuous(breaks = c(0.25, 1, 3, 6, 12),
+                     labels = c("1W", "1M", "3M", "6M", "1Y")) +
+  scale_color_gradientn(
+    colours = viridis::viridis(100, option = "plasma"),
+    name = "Date",
+    breaks = as.numeric(as.Date(c("2024-01-01", "2024-05-01", "2024-09-01", "2025-01-01"))),
+    labels = c("Jan 2024", "May 2024", "Sep 2024", "Jan 2025")
+  )
+
+# Save the plot
+ggsave("usdgbp_term_structure_waterfall.png", waterfall_plot, width = 12, height = 8, dpi = 150)
+
+# Display plot inline in RMarkdown
+waterfall_plot
+
+```
+
+As we can see from the waterfall chart, there is a clear upward shift in the entire curve as the election approached. And the curves exhibit a significant steepening, with the 1 week tenor rising the most, signaling that the market was pricing in elevated short-term event risk.
+
+## PCA
+
+As we aspire to be investment professionals, we sometimes need to come back to the fundamentals (which sets us apart from speculators). Taking a step back, it is still supply and demand that drives FX market. Investors typically put money into economies with positive outlooks, driving increased demand and raising a currency's value. Here we take a look at GDP growth, industrial production growth, retail sales growth, and unemployment data, and apply Principle Component Analysis to see if macroeconomic factors are still key drivers for USDGBP exchange rate, even in the backdrop of elevated uncertainties, and chaotic investment sentiments on both sides of the Atlantic. 
+
+```{r PCA}
+
+# PCA Analysis for UK economic data
+# First, let's prepare the data for PCA
+
+# Ensure the UK_economic_data is properly formatted
+str(UK_economic_data)
+
+# Remove any NA values
+UK_economic_data_clean <- na.omit(UK_economic_data)
+
+# Scale the data (excluding the Date column)
+uk_pca_data <- scale(UK_economic_data_clean[, -1])
+
+# Perform PCA
+uk_pca <- prcomp(uk_pca_data, center = TRUE, scale. = TRUE)
+
+# Summary of the PCA results
+summary(uk_pca)
+
+# Visualize the results
+# Scree plot to determine the optimal number of components
+fviz_eig(uk_pca, addlabels = TRUE)
+
+# Plot of variables
+fviz_pca_var(uk_pca,
+             col.var = "contrib", # Color by contributions
+             gradient.cols = viridis(256),
+             repel = TRUE # Avoid text overlapping
+)
+
+# Plot of individuals
+fviz_pca_ind(uk_pca,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = viridis(256),
+             repel = TRUE # Avoid text overlapping
+)
+
+# Biplot of individuals and variables
+fviz_pca_biplot(uk_pca,
+                repel = TRUE,
+                col.var = "#FC4E07", # Variables color
+                col.ind = "#00AFBB"  # Individuals color
+)
+
+# Extract the principal components
+uk_pca_components <- as.data.frame(uk_pca$x)
+
+# Add the date back to the PCA results
+uk_pca_components$Date <- UK_economic_data_clean$Date
+
+# Let's create a time series visualization of the principal components
+# First, reshape the data for ggplot
+uk_pca_long <- uk_pca_components %>%
+  pivot_longer(cols = starts_with("PC"),
+               names_to = "Component",
+               values_to = "Value")
+
+# Plot the time series of principal components
+ggplot(uk_pca_long, aes(x = Date, y = Value, color = Component)) +
+  geom_line() +
+  labs(title = "Time Series of UK Economic Data Principal Components",
+       x = "Date",
+       y = "Component Value") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_color_viridis_d()
+
+# Create an interactive time series chart using dygraphs
+uk_pca_xts <- xts(uk_pca_components[, 1:min(5, ncol(uk_pca_components)-1)], 
+                  order.by = uk_pca_components$Date)
+
+dygraph(uk_pca_xts, main = "UK Economic Principal Components") %>%
+  dyOptions(colors = viridis(ncol(uk_pca_xts))) %>%
+  dyRangeSelector() %>%
+  dyHighlight(highlightCircleSize = 5,
+              highlightSeriesBackgroundAlpha = 0.2,
+              hideOnMouseOut = FALSE) %>%
+  dyEvent("2024-11-05", "US Election", labelLoc = "top", color = "red")
+
+# Calculate contributions of variables to principal components
+var_contrib <- get_pca_var(uk_pca)$contrib
+contrib_df <- as.data.frame(var_contrib)
+rownames(contrib_df) <- colnames(UK_economic_data_clean)[-1]
+
+# Plot contribution of variables to the first two principal components
+fviz_contrib(uk_pca, choice = "var", axes = 1:2, top = 10)
+
+# Generate a heatmap of variable contributions
+contribution_matrix <- as.matrix(contrib_df[, 1:min(5, ncol(contrib_df))])
+colnames(contribution_matrix) <- paste0("PC", 1:ncol(contribution_matrix))
+
+# Plot heatmap of contributions
+heatmap_data <- as.data.frame(contribution_matrix) %>%
+  rownames_to_column("Variable") %>%
+  pivot_longer(cols = -Variable, names_to = "Component", values_to = "Contribution")
+
+ggplot(heatmap_data, aes(x = Component, y = Variable, fill = Contribution)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Variable Contributions to Principal Components",
+       x = "Principal Component",
+       y = "Variable",
+       fill = "Contribution (%)")
+
+# Create a PCA-based clustering
+# Determine optimal number of clusters
+fviz_nbclust(uk_pca_data, kmeans, method = "silhouette") +
+  labs(title = "Optimal Number of Clusters")
+
+# Perform K-means clustering on PCA results (assuming optimal k = 3)
+set.seed(123)
+k <- 3 # You can adjust this based on the previous analysis
+km_res <- kmeans(uk_pca$x[, 1:2], centers = k, nstart = 25)
+
+# Visualize the clusters on PCA plot
+fviz_cluster(list(data = uk_pca$x[, 1:2], cluster = km_res$cluster),
+             ellipse.type = "convex",
+             palette = viridis(k),
+             ggtheme = theme_minimal(),
+             main = "Cluster Plot on PCA Components")
+
+# Add cluster information to the original data
+UK_economic_data_clean$cluster <- km_res$cluster
+
+# Time series of economic data colored by clusters
+# First, reshape the data
+uk_cluster_data <- UK_economic_data_clean %>%
+  pivot_longer(cols = -c(Date, cluster),
+               names_to = "Indicator",
+               values_to = "Value")
+
+# Plot time series by cluster
+ggplot(uk_cluster_data, aes(x = Date, y = Value, color = factor(cluster))) +
+  geom_line() +
+  facet_wrap(~ Indicator, scales = "free_y") +
+  labs(title = "UK Economic Indicators by Cluster",
+       x = "Date",
+       y = "Value",
+       color = "Cluster") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_viridis_d()
+
+# Merge with volatility data for further analysis
+# This depends on the structure of your specific datasets, 
+# but here's a general approach
+
+# First, ensure all dates are in the same format
+gbp_vol_data$Date <- as.Date(gbp_vol_data$Date)
+eur_vol_data$Date <- as.Date(eur_vol_data$Date)
+jpy_vol_data$Date <- as.Date(jpy_vol_data$Date)
+
+# Create a merged dataset with PCA components and volatility
+pca_vol_merged <- uk_pca_components %>%
+  # Keep only necessary columns
+  select(Date, PC1, PC2, PC3) %>%
+  # Join with GBP volatility
+  left_join(gbp_vol_data, by = "Date") %>%
+  # Rename columns to distinguish volatility measures
+  rename_with(~ paste0("GBP_", .), .cols = -c(Date, PC1, PC2, PC3))
+
+# Analyze relationship between PCA components and volatility
+# Example: Correlation matrix
+cor_matrix <- cor(pca_vol_merged[, c("PC1", "PC2", "PC3", 
+                                     grep("GBP_", names(pca_vol_merged), value = TRUE))], 
+                  use = "complete.obs")
+
+# Plot correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45,
+         col = colorRampPalette(c("#6D9EC1", "white", "#E46726"))(200))
+
+# Regression analysis: predict volatility using PCA components
+vol_model <- lm(GBP_GBPUSDV1M ~ PC1 + PC2 + PC3, data = pca_vol_merged)
+summary(vol_model)
+
+# Plot the regression results
+augmented_model <- augment(vol_model)
+
+ggplot(augmented_model, aes(x = .fitted, y = GBP_GBPUSDV1M)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "PCA Components vs. GBP-USD 1M Volatility",
+       x = "Fitted Values from PCA Components",
+       y = "GBP-USD 1M Volatility") +
+  theme_minimal()
+
+
+```
+Let's break down the output step by step.  
+The scree plot reveals that the first two principal components explain approximately 70% of the total variance in the macro data (43.7% + 26.2%). This indicates that most of the variation can be captured using just two dimensions — a helpful simplification for understanding underlying macro trends.
+
+From the variable correlation plot (PCA variable map), we observe:
+- Dim 1 (43.7%) appears to represent a general growth factor, heavily influenced by GDP growth and industrial production. These vectors are aligned and point strongly in the positive direction of PC1.
+- Dim 2 (26.2%) captures orthogonal variation, possibly a cyclical component, with more contribution from retail sales and unemployment rate (which moves inversely).
+This decomposition is intuitive that stronger GDP and industrial production imply robust economic health and likely support the pound, while unemployment and weak retail sales may signal slack in the economy.
+
+The individuals plot (i.e. scores of each observation on the PCA axes) shows how different periods cluster according to their macro profiles. After performing k-means clustering on the first two principal components, we can clearly differentiate macro regimes:
+Cluster 1: High growth, low unemployment — GBP likely supported.
+Cluster 2: Low growth, weak retail, and higher unemployment — macro headwinds for GBP.
+Cluster 3: Mixed signals — likely periods of policy transition or external shocks.
+These clusters, when plotted over time, reveal macro cycles that coincide with key geopolitical and monetary events — such as Brexit policy adjustments or shifting interest rate expectations.
+
+Visualizing the components over time reveals the evolving macro picture:
+- PC1 fluctuates around key growth moments — including a sharp rebound mid-2023 and volatility around early 2024, likely reflecting growth shocks.
+- PC2 shows softness entering mid-2024, possibly indicating consumer fatigue or labor market deterioration.
+- Interestingly, PC3 begins to trend higher approaching the US election in November 2024, suggesting heightened uncertainty or exogenous influences that aren't explained by core UK economic strength.
+
+Moving forwards, the bar chart and heatmap of variable contributions confirm our interpretation that 
+1) GDP growth and industrial production dominate PC1, reinforcing its role as a proxy for economic momentum; 
+2) Retail sales and unemployment contribute more significantly to PC2 and PC3, reflecting the underlying structure of UK macro drivers. 
+PCA doesn’t just compress the data — it reveals the latent economic themes that explain how different parts of the economy co-move.
+
+To further interpret macro conditions, we used k-means clustering on the PCA-transformed data. The silhouette method suggests an optimal number of clusters around k = 7, indicating diverse economic regimes in the sample period.
+Each cluster represents a distinct macroeconomic regime:
+- Some show strong PC1 and PC2 scores — periods of broad expansion and risk-on sentiment.
+- Others reflect divergence, with PC1 rising but PC2 falling — possibly stagflation-like environments.
+- A few clusters are characterized by high PC3 values — perhaps capturing periods of elevated political or policy risk.
+These regimes can be mapped back onto the time series to trace the economic mood over time — a useful overlay for discretionary macro or FX strategies.
+
+To quantify the influence of macro regimes on the market, we examined the correlation between principal components and GBPUSD implied volatilities across different tenors. The correlation heatmap reveals PC1 (growth factor) shows a strong positive correlation with 1M, 3M, and 6M GBPUSD volatility, confirming that periods of sharp economic acceleration or deceleration coincide with heightened uncertainty. PC2 and PC3 also show moderate correlations, particularly with shorter-term volatilities, likely reflecting consumer- or labor-driven surprises that affect near-term expectations. This underscores that volatility is not random — it's systematically tied to shifts in macro fundamentals.
+
+To formalise this relationship, we ran a linear regression of 1M GBPUSD implied volatility on PC1, PC2, and PC3. The results confirmed that:
+1) PC1 is a significant driver of 1M vol.
+2) The fitted values track observed volatility reasonably well (see regression plot), reinforcing that macro data has predictive power, even in a noisy FX environment.
+
+Final thoughts...
+This analysis reinforces that despite the noise of daily headlines, macro fundamentals remain embedded in market pricing. FX volatility, especially in a major pair like GBPUSD, is not only a function of risk sentiment — it's also a reflection of real economic divergence.
+
