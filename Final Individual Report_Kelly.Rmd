@@ -1,0 +1,543 @@
+---
+title: "Final Individual Project"
+author: "Kelly Zhou"
+date: "2025-04-07"
+output: html_document
+---
+## Executive Summary
+
+This report explores how the correlation between U.S. equities and long-duration government bonds evolved from 2018 to 2025, particularly in relation to macroeconomic forces like inflation, interest rates, and monetary policy cycles. Using rolling correlation analysis, changepoint detection, and macroeconomic overlays, we show that traditional diversification broke down during periods of inflation and Fed tightening.
+
+We also extend the analysis to a recent macro shock — the April 2025 U.S. tariff announcement — to investigate FX market reactions. A short-term momentum trading strategy based on post-announcement currency behavior demonstrated profitable signals, particularly for USD strength.
+
+Overall, this report reveals that market relationships are not static, and both macroeconomic context and correlation regimes are key to portfolio construction and trading strategy design.
+
+## How has the correlation between equities and bonds evolved from 2018-2025, and what macroeconomic factors are driving these changing relationships? 
+
+```{r}
+#load necessary pacakges
+library(tidyverse)
+library(tidyquant) #used for financial analysis, especially for getting stock prices
+library(lubridate)
+library(tseries)
+library(forecast)
+library(PerformanceAnalytics) #Specialized in analyzing the performance of financial strategies.
+library(corrplot) #Visualization tool for correlation matrices.
+library(roll) #Calculating moving averages, rolling correlations, rolling regressions, etc.
+
+#Set time period (5+ years is a good time span for this analysis)
+start_date <-"2018-01-01"
+end_date <- Sys.Date()
+
+#Get daily price data for major indices and bonds
+symbols <-c("SPY", # S&P 500 ETF
+            "QQQ", # NASDAQ ETF
+            "TLT", # 20+ Year Treasury Bond ETF
+            "IEF", # 7-10 Year Treasury Bond ETF 
+            "AGG", # Aggregate Bond ETF
+            "^VIX", # Volatility Index
+            "^TNX") # 10-Year Treasury Yield
+
+# Get Price Data 
+asset_prices <- tq_get(symbols,
+                       from = start_date,
+                       to= end_date,
+                       get ="stock.prices")
+
+# Get key economic data from FRED 
+macro_symbols <- c("FEDFUNDS", # fed fund rates
+                   "CPIAUCSL", # CPI (seasonally adjusted)
+                   "T10Y2Y", # 10y-2y yield spread
+                   "UNRATE") # unemployment rate
+
+macro_data <- tq_get(macro_symbols,
+                     from=start_date,
+                     to=end_date,
+                     get="economic.data")
+
+#Calculate returns for assets
+asset_returns<-asset_prices %>%
+  group_by(symbol)%>%
+  tq_transmute(select=adjusted,
+               mutate_fun=periodReturn,
+               period="daily",
+               col_rename="returns")
+
+# Convert to wide format for correlation analysis
+returns_wide <- asset_returns %>%
+  pivot_wider(id_cols = date, names_from = symbol, values_from = returns) %>%
+  na.omit()
+```
+```{r}
+asset_returns %>%
+  filter(symbol %in% c("SPY", "TLT", "AGG")) %>%
+  ggplot(aes(x = date, y = returns, color = symbol)) +
+  geom_line() +
+  facet_wrap(~ symbol, scales = "free_y") +
+  labs(title = "Daily Returns", y = "Return", x = "Date")
+```
+
+
+#My analysis approach includes: 
+- rolling correlation analysis 
+Rolling correlation measures the short-term relationship between two assets over a moving window (60 days in this case). It tells me how two assets have been moving together or apart over time: 
++1 means a perfect positive correlation
+0 means no correlation 
+-1 means a perfect negative correlation (they move oppositely)
+```{r}
+# Calculate rolling 60-day correlations between SPY and bond ETFs
+window_size <- 60
+
+# Create function to calculate multiple rolling correlations
+calculate_rolling_cors <- function(data, window_size) {
+  # Identify equity and bond columns
+  equity_col <- "SPY"
+  bond_cols <- c("TLT", "IEF", "AGG")
+  
+  # Initialize results dataframe
+  results <- data %>% select(date)
+  
+  # Calculate correlations for each bond ETF with SPY
+  for (bond in bond_cols) {
+    col_name <- paste0("cor_SPY_", bond)
+    results[[col_name]] <- roll_cor(data[[equity_col]], data[[bond]], width = window_size)
+  }
+  
+  return(results)
+}
+
+# Calculate rolling correlations
+rolling_cors <- calculate_rolling_cors(returns_wide, window_size)
+
+# Visualize rolling correlations
+rolling_cors %>%
+  pivot_longer(cols = starts_with("cor_"), 
+               names_to = "correlation_pair", 
+               values_to = "correlation") %>%
+  ggplot(aes(x = date, y = correlation, color = correlation_pair)) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "60-Day Rolling Correlation: S&P 500 vs Bond ETFs",
+       subtitle = "2018-2025",
+       y = "Correlation Coefficient",
+       x = "") +
+  scale_color_brewer(palette = "Set1", 
+                    labels = c("S&P 500 vs 20+ Yr Treasury", 
+                              "S&P 500 vs 7-10 Yr Treasury",
+                              "S&P 500 vs Aggregate Bonds"))
+```
+It is evident on the graph that the correlations fluctuate a lot over time, which means the relationship between equities and bonds is not stable. The negative correlation zones are periods where bonds acted as a hedge to equities -- when SPY went down, bonds went up. 
+
+
+```{r}
+library(dygraphs)
+library(xts)
+
+# Convert to xts (assumes rolling_cors has a 'date' column)
+rolling_xts <- xts::xts(rolling_cors[, -1], order.by = rolling_cors$date)
+
+# Interactive plot
+dygraph(rolling_xts, main = "60-Day Rolling Correlations: S&P 500 vs Bond ETFs (2018–2025)") %>%
+  dyOptions(colors = RColorBrewer::brewer.pal(3, "Set1")) %>%
+  dyLegend(show = "always", width = 300) %>%
+  dyRangeSelector() %>%
+  dyAxis("y", label = "Correlation") %>%
+  dyEvent("2020-03-01", "COVID Crash", labelLoc = "bottom", color = "black") %>%
+  dyEvent("2021-01-20", "Biden Inaug.", labelLoc = "bottom", color = "blue") %>%
+  dyEvent("2022-02-24", "Ukraine War", labelLoc = "bottom", color = "red") %>%
+  dyEvent("2023-03-10", "SVB Collapse", labelLoc = "bottom", color = "darkgreen") %>%
+  dyEvent("2025-01-20", "Trump Inaug. (2025)", labelLoc = "bottom", color = "blue") %>%
+  dyEvent("2025-03-01", "Tariffs (2025)", labelLoc = "bottom", color = "blue")
+
+
+```
+
+To summarise: 
+1. 2020 - Covid Crash 
+There are sharp negative correlations, especially in early stages (classic flight-to-safety). Bonds hedged equities effectively during the crash. We observe that correlation then spikes, suggesting increased systemic risk. 
+
+2. 2021 - Biden Inauguration 
+Short-term dip in correlations, then stabilization. It might reflect relief rally, fiscal stimulus optimism, or general market confidence.
+
+3. 2022 - Russia-Ukraine War 
+Spikes in uncertainty and volatility. Correlations briefly drop, but rebound as risk sentiment settles.
+
+4. 2023 - SVB Collapse 
+Spike in uncertainty causes a brief drop in correlation — similar to COVID moment. But the drop was less prolonged — suggests a smaller-scale panic.
+
+5. 2025 - Trump Inauguration and New Tarrifs 
+All positive correlations, and dips after Trump's trade policies.
+
+
+We observe that correlation spikes during crisis periods such as the COVID-19 market crash in March 2020, with previously uncorrelated or negatively correlated assets beginning to move in tandem. This phenomenon reflects a surge in systemic risk, where investors across asset classes react simultaneously to a global shock, often driven by forced liquidations, flight to cash, or panic selling. In such regimes, traditional diversification benefits break down as correlations converge toward 1, reducing the effectiveness of multi-asset portfolios in protecting downside risk.
+
+
+
+Now I want to explore the effect of rate cycles. 
+```{r}
+library(dygraphs)
+library(xts)
+
+# Convert to xts time series
+rolling_xts <- xts::xts(rolling_cors[, -1], order.by = rolling_cors$date)
+
+# Define FOMC policy actions
+fomc_events <- data.frame(
+  date = as.Date(c("2022-03-16", "2022-05-04", "2022-06-15", "2022-07-27",
+                   "2022-09-21", "2022-11-02", "2022-12-14", "2023-02-01",
+                   "2023-03-22", "2023-05-03", "2023-07-26",
+                   "2024-09-18", "2024-11-07", "2024-12-18")),
+  label = c("Hike +0.25%", "Hike +0.50%", "Hike +0.75%", "Hike +0.75%",
+            "Hike +0.75%", "Hike +0.75%", "Hike +0.50%", "Hike +0.25%",
+            "Hike +0.25%", "Hike +0.25%", "Final Hike",
+            "Cut -0.50%", "Cut -0.25%", "Cut -0.25%"),
+  type = c(rep("hike", 11), rep("cut", 3))
+)
+
+# Define shading periods for policy cycles
+# These are periods over which the Fed was actively hiking or cutting
+policy_shades <- data.frame(
+  start = as.Date(c("2022-03-16", "2024-09-18")),
+  end   = as.Date(c("2023-07-26", "2024-12-18")),
+  type  = c("hike", "cut"),
+  color = c("orange", "skyblue")
+)
+
+# Create the interactive dygraph
+dy <- dygraph(rolling_xts, main = "Rolling Correlations with FOMC Policy Cycles (2018–2025)") %>%
+  dyOptions(colors = RColorBrewer::brewer.pal(3, "Set1")) %>%
+  dyLegend(show = "always", width = 300) %>%
+  dyRangeSelector() %>%
+  dyAxis("y", label = "Correlation")
+
+# Add event markers (exact policy actions)
+for (i in 1:nrow(fomc_events)) {
+  dy <- dy %>%
+    dyEvent(fomc_events$date[i], fomc_events$label[i],
+            labelLoc = "bottom",
+            color = ifelse(fomc_events$type[i] == "hike", "orange", "skyblue"))
+}
+
+# Add shaded areas for hike/cut cycles
+for (i in 1:nrow(policy_shades)) {
+  dy <- dy %>%
+    dyShading(from = policy_shades$start[i],
+              to = policy_shades$end[i],
+              color = policy_shades$color[i])
+}
+
+# Display the graph
+dy
+
+```
+
+The organge zone represents a Fed rate hike cycles and the correlations move positively, especially for TLT and IEF. It shows that stocks and bonds moved together, reducing diversification. It likely reflects an inflationary regime where both asset classes suffered from rising rates. 
+
+The blue zone represents a rate cut cycle and coorelation dips slightly -- consistent with return of risk-off behaviour. It is often associated with weakening economic outlook or deflationary pressure.
+
+```{r}
+# Perform regime detection using change point analysis
+library(changepoint)
+
+# Extract SPY-TLT correlation series
+spy_tlt_cor <- rolling_cors %>% 
+  select(date, cor_SPY_TLT) %>%
+  na.omit()
+
+# Detect change points in correlation series
+cpts <- cpt.meanvar(spy_tlt_cor$cor_SPY_TLT, method = "PELT")
+change_points <- cpts@cpts
+
+# Create regime labels
+spy_tlt_cor$regime <- 0
+for(i in 1:length(change_points)) {
+  if(i == 1) {
+    spy_tlt_cor$regime[1:change_points[i]] <- i
+  } else {
+    spy_tlt_cor$regime[(change_points[i-1]+1):change_points[i]] <- i
+  }
+}
+
+# Plot with regime highlighting
+ggplot(spy_tlt_cor, aes(x = date, y = cor_SPY_TLT)) +
+  geom_line() +
+  geom_rect(aes(xmin = date, xmax = lead(date), 
+                ymin = -1, ymax = 1, fill = factor(regime)), 
+            alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "SPY-TLT Correlation Regimes",
+       subtitle = "Detected using change point analysis",
+       y = "Correlation Coefficient", 
+       x = "",
+       fill = "Regime") +
+  theme(legend.position = "bottom")
+
+# Calculate summary statistics for each regime
+regime_stats <- spy_tlt_cor %>%
+  group_by(regime) %>%
+  summarise(
+    start_date = min(date),
+    end_date = max(date),
+    avg_correlation = mean(cor_SPY_TLT),
+    std_dev = sd(cor_SPY_TLT),
+    duration_days = n()
+  )
+```
+
+A "regime" in financial time series analysis refers to a distinct period where the relationship between assets (in your case, stocks and bonds) shows a consistent pattern. 
+
+
+```{r}
+# Define function to create correlation matrix for specific time periods
+create_corr_matrix <- function(data, start_date, end_date) {
+  data %>%
+    filter(date >= start_date & date <= end_date) %>%
+    select(-date) %>%
+    cor() %>%
+    return()
+}
+
+# Create correlation matrices for different regimes
+regime_dates <- regime_stats %>% select(regime, start_date, end_date)
+
+# Initialize a list to store correlation matrices
+corr_matrices <- list()
+
+# Generate correlation matrix for each regime
+for(i in 1:nrow(regime_dates)) {
+  reg <- regime_dates$regime[i]
+  s_date <- regime_dates$start_date[i]
+  e_date <- regime_dates$end_date[i]
+  
+  # Get returns data for this period
+  period_data <- returns_wide %>%
+    filter(date >= s_date & date <= e_date)
+  
+  # Calculate correlation if sufficient data
+  if(nrow(period_data) > 10) {
+    corr_matrices[[paste0("Regime_", reg)]] <- period_data %>%
+      select(-date) %>%
+      cor()
+  }
+}
+
+# Visualize correlation matrices for each regime
+library(gridExtra)
+corr_plots <- list()
+
+for(i in 1:length(corr_matrices)) {
+  corrplot(corr_matrices[[i]], method = "color", 
+           type = "upper", order = "hclust", 
+           title = names(corr_matrices)[i],
+           mar = c(0,0,1,0), 
+           tl.col = "black", tl.srt = 45, 
+           diag = FALSE)
+  corr_plots[[i]] <- recordPlot()  # 👈 this captures the base R plot
+}
+
+
+```
+
+We calculated asset-to-asset correlation matrices for each detected regime to analyze how market structure evolved. In Regime 5, for instance, long-duration Treasuries (TLT) showed strong negative correlation with SPY and QQQ, consistent with a traditional risk-on/risk-off environment. However, in later regimes (e.g., during the 2022–2023 Fed hiking cycle), these relationships weaken or reverse, indicating a breakdown in diversification benefits and the emergence of system-wide policy sensitivity.
+
+```{r}
+library(scales)
+
+# Create monthly SPY-TLT correlation
+monthly_corr <- rolling_cors %>%
+  select(date, cor_SPY_TLT) %>%
+  mutate(year_month = floor_date(date, "month")) %>%
+  group_by(year_month) %>%
+  summarise(SPY_TLT_cor = mean(cor_SPY_TLT, na.rm = TRUE))
+
+# Create macro dataset (monthly already from tq_get)
+macro_monthly <- macro_data %>%
+  mutate(year_month = floor_date(date, "month")) %>%
+  group_by(symbol, year_month) %>%
+  summarise(value = mean(price, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = symbol, values_from = value)
+
+
+# Merge into a single table
+macro_cor_data <- left_join(monthly_corr, macro_monthly, by = "year_month")
+
+```
+
+```{r}
+# Prep data: convert monthly and merge correlation + macro
+fed_plot_data <- macro_cor_data %>%
+  select(year_month, SPY_TLT_cor, FEDFUNDS)
+
+# Plot with dual axis (careful with interpretation!)
+ggplot(fed_plot_data, aes(x = year_month)) +
+  geom_line(aes(y = SPY_TLT_cor, color = "SPY-TLT Correlation")) +
+  geom_line(aes(y = rescale(FEDFUNDS, to = c(-1, 1)), color = "Fed Funds Rate (scaled)")) +
+  scale_y_continuous(name = "SPY-TLT Correlation",
+                     sec.axis = sec_axis(~ ., name = "Fed Funds Rate (scaled)")) +
+  scale_color_manual(values = c("SPY-TLT Correlation" = "darkblue", "Fed Funds Rate (scaled)" = "orange")) +
+  labs(title = "SPY-TLT Correlation vs Fed Funds Rate", x = "Date", color = "") +
+  theme_minimal()
+
+```
+Normally, bonds hedge stocks — a negative SPY-TLT correlation. But when the Fed starts aggressively raising rates, this relationship breaks down (correlation moves toward zero or positive). The chart illustrates a striking structural change in the stock–bond relationship. From 2018 to 2021, the Fed held rates near zero, and SPY-TLT correlation was mostly negative — bonds served as a hedge. However, as the Fed initiated its sharp hiking cycle in 2022, the correlation turned positive. This indicates a breakdown in diversification benefits and reflects a broader regime shift where both equities and long-duration bonds became sensitive to inflation and policy tightening.
+
+
+
+```{r}
+ggplot(macro_cor_data, aes(x = CPIAUCSL, y = SPY_TLT_cor)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, color = "firebrick") +
+  theme_minimal() +
+  labs(title = "CPI vs SPY-TLT Correlation",
+       x = "Consumer Price Index (CPI)",
+       y = "SPY-TLT Rolling Correlation")
+
+```
+The scatter plot above illustrates the relationship between inflation (CPI) and the SPY–TLT rolling correlation. As inflation rises, the correlation becomes less negative and even turns positive. This implies that in higher inflation environments, long-duration bonds are more likely to move in tandem with equities, weakening their traditional role as a hedge. The LOESS smoothing line reinforces this trend, suggesting that inflation is a key macro driver behind the shifting correlation regimes observed earlier.
+
+
+```{r}
+macro_cor_data %>%
+  select(SPY_TLT_cor, FEDFUNDS, CPIAUCSL, T10Y2Y, UNRATE) %>%
+  cor(use = "complete.obs") %>%
+  round(2)
+
+library(corrplot)
+corr_matrix <- macro_cor_data %>%
+  select(SPY_TLT_cor, FEDFUNDS, CPIAUCSL, T10Y2Y, UNRATE) %>%
+  cor(use = "complete.obs")
+corrplot(corr_matrix, method = "color", type = "upper", addCoef.col = "black")
+
+```
+To further quantify the macroeconomic drivers of bond-equity correlation, we computed a correlation matrix using key macro variables. The analysis reveals a strong positive correlation between CPI and the SPY–TLT rolling correlation (+0.75), confirming that higher inflation coincides with reduced diversification benefits. Similarly, the Fed Funds Rate shows a moderately positive relationship (+0.57), aligning with the idea that monetary tightening compresses diversification. Meanwhile, a steeper yield curve (T10Y2Y) appears to preserve negative correlation (–0.38), suggesting that expectations of economic slowdown may restore bonds' role as a hedge.
+
+
+#Trading Strategy 
+
+1. Dynamic allocation strategy based on inflation 
+The main idea is to allocate between SPY and TLT depending on CPI levels or correlation regime. 
+If CPI is low or correlation is negative, we should long 60/40 SPY/TLT. If CPI is high or have a positive correlation, we should go overweight SPY and hedge TLT.
+
+```{r}
+macro_cor_data <- macro_cor_data %>%
+  mutate(weight_TLT = ifelse(SPY_TLT_cor < 0, 0.4, 0.1),
+         weight_SPY = 1 - weight_TLT)
+
+```
+
+2. Fed cycle-based long/short positioning
+The idea here is to use shaded fed hike/cut cycles to rotate exposure. During rate hike cycles: go long stocks/SPY, short TLT, both will sell off, but SPY might outperform. And during the rate cut cycles, go long TLT, reduce equity risk
+
+
+Based on the macro-driven shifts in correlation identified earlier, a dynamic asset allocation strategy could adjust SPY–TLT exposure depending on inflation and monetary policy conditions. During periods of high CPI and positive correlation, the model reduces TLT allocation, while in low-inflation regimes with negative correlation, a traditional 60/40 allocation is applied. This approach attempts to preserve diversification benefits and manage interest rate risk dynamically.
+
+
+
+## How do major currencies (USD, GBP, CNY, JPY, EUR) respond to significant tariff announcements, and what trading strategies could capitalize on these patterns?
+
+I have been closey following up with the financial market and have seen the volatile movement in the currency pairs. I wanted to explore and investigate it more and come up with a trading strategy. 
+
+```{r}
+library(tidyquant)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+# Define symbols for FX pairs
+fx_symbols <- c("EURUSD=X", "GBPUSD=X", "JPY=X", "USDCNY=X", "DX-Y.NYB")  # USD Index, EUR, GBP, JPY, CNY
+
+# Pull daily FX rates from Yahoo Finance
+fx_data <- tq_get(fx_symbols,
+                  from = "2025-03-15",
+                  to = "2025-04-30",
+                  get = "stock.prices") %>%
+  select(date, symbol, adjusted)
+
+```
+
+
+```{r}
+fx_normalized <- fx_data %>%
+  group_by(symbol) %>%
+  arrange(date) %>%
+  mutate(base = first(adjusted),
+         pct_change = (adjusted - base) / base * 100)
+
+```
+
+```{r}
+ggplot(fx_normalized, aes(x = date, y = pct_change, color = symbol)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = as.Date("2025-04-01"), linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "FX Market Reaction to April 2025 Tariffs",
+       subtitle = "Base = March 15, 2025",
+       x = "Date", y = "% Change vs Base",
+       color = "Currency Pair")
+
+```
+
+```{r}
+fx_returns <- fx_normalized %>%
+  filter(date %in% as.Date(c("2025-04-01", "2025-04-04", "2025-04-08"))) %>%
+  pivot_wider(names_from = date, values_from = pct_change) %>%
+  rename(
+    Day0 = `2025-04-01`,
+    Day3 = `2025-04-04`,
+    Day5 = `2025-04-08`
+  ) %>%
+  mutate(Return_3d = Day3 - Day0,
+         Return_5d = Day5 - Day0)
+
+fx_returns
+
+```
+
+# Trading Strategy
+1. Momentum strategy design 
+Assumption: currencies that reacted strongly to the tariff announcement will continue in the same direction for few more days. 
+Logic: Go long the currency with the highest positive return. Go short the one with the lowest (or most negative) return
+
+```{r}
+# Already calculated: fx_returns with Day0, Day3, Return_3d
+
+# Identify long and short positions based on momentum
+momentum_signal <- fx_returns %>%
+  slice_max(Return_3d, n = 1) %>%
+  rename(long_pair = symbol, long_return_3d = Return_3d) %>%
+  bind_cols(
+    fx_returns %>% slice_min(Return_3d, n = 1) %>%
+      select(short_pair = symbol, short_return_3d = Return_3d)
+  )
+
+```
+
+```{r}
+fx_returns_day8 <- fx_normalized %>%
+  filter(date == as.Date("2025-04-08")) %>%
+  select(symbol, pct_change) %>%
+  rename(pct_day8 = pct_change)
+
+fx_returns_day3 <- fx_normalized %>%
+  filter(date == as.Date("2025-04-04")) %>%
+  select(symbol, pct_change) %>%
+  rename(pct_day3 = pct_change)
+
+fx_returns_joined <- fx_returns_day3 %>%
+  left_join(fx_returns_day8, by = "symbol") %>%
+  mutate(hold_return = pct_day8 - pct_day3)
+
+long_sym <- momentum_signal$long_pair[[1]]
+short_sym <- momentum_signal$short_pair[[1]]
+
+strategy_result <- fx_returns_joined %>%
+  filter(symbol %in% c(long_sym, short_sym)) %>%
+  mutate(role = ifelse(symbol == long_sym, "Long", "Short"))
+
+
+strategy_result
+
+```
+
+
